@@ -1,0 +1,4 @@
+# This directory stores game component bundles
+# Game components are built separately and placed here
+# They are served dynamically at runtime without requiring server restart
+

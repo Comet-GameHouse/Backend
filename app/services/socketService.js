@@ -274,7 +274,32 @@ const createSocketService = (server) => {
     }
   };
 
-  return { wss, sendNotificationToUser };
+  // Helper function to broadcast message to all connected users
+  const broadcastToAll = (messageType, data) => {
+    const message = JSON.stringify({
+      type: messageType,
+      data: data,
+    });
+
+    let sentCount = 0;
+    userConnections.forEach((connections) => {
+      connections.forEach((ws) => {
+        if (ws.readyState === 1) { // WebSocket.OPEN
+          try {
+            ws.send(message);
+            sentCount++;
+          } catch (error) {
+            console.error('Error broadcasting message:', error);
+          }
+        }
+      });
+    });
+
+    console.log(`Broadcasted ${messageType} to ${sentCount} connected users`);
+    return sentCount;
+  };
+
+  return { wss, sendNotificationToUser, broadcastToAll };
 };
 
 module.exports = createSocketService;

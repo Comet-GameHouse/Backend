@@ -1,34 +1,123 @@
 const Notification = require('../models/Notification');
+const NotificationRead = require('../models/NotificationRead');
+const User = require('../models/User');
 
 /**
  * Get all notifications for the authenticated user
+ * Includes both user-specific notifications and global notifications
  */
 const getNotifications = async (req, res) => {
   try {
     const { limit = 50, offset = 0, unreadOnly = false } = req.query;
+    const userId = req.user.id;
     
-    const query = { userId: req.user.id };
+    // Get user to check verification status for global notification filtering
+    const user = await User.findById(userId).select('isVerified emailVerifiedAt').lean();
+    const isVerified = user?.isVerified || !!user?.emailVerifiedAt;
+
+    // Get user-specific notifications
+    const userQuery = { userId };
     if (unreadOnly === 'true') {
-      query.readAt = { $exists: false };
+      userQuery.readAt = { $exists: false };
     }
 
-    const notifications = await Notification.find(query)
+    // Fetch more than needed so we can combine and limit properly
+    const fetchLimit = parseInt(limit) * 2; // Fetch more to account for combining
+    const userNotifications = await Notification.find(userQuery)
       .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
+      .limit(fetchLimit)
       .skip(parseInt(offset))
       .lean();
 
-    const unreadCount = await Notification.countDocuments({
-      userId: req.user.id,
+    // Build query for global notifications that match user's audience
+    const globalAudienceConditions = [{ targetAudience: 'all' }];
+    if (isVerified) {
+      globalAudienceConditions.push({ targetAudience: 'verified' });
+    } else {
+      globalAudienceConditions.push({ targetAudience: 'unverified' });
+    }
+
+    // Get IDs of global notifications this user has read
+    const readGlobalNotificationIds = await NotificationRead.find({ userId }).select('notificationId').lean();
+    const readIds = readGlobalNotificationIds.map((r) => r.notificationId.toString());
+
+    // Build global query
+    const globalQuery = {
+      isGlobal: true,
+      sentAt: { $exists: true }, // Only sent global notifications
+      $or: globalAudienceConditions,
+    };
+
+    // Only exclude read global notifications if unreadOnly is true
+    if (unreadOnly === 'true' && readIds.length > 0) {
+      globalQuery._id = { $nin: readIds };
+    }
+
+    // Fetch more than needed so we can combine and limit properly
+    const globalNotificationsRaw = await Notification.find(globalQuery)
+      .sort({ createdAt: -1 })
+      .limit(fetchLimit)
+      .lean();
+
+    // Transform global notifications to include readAt if user has read them
+    const globalNotificationIds = globalNotificationsRaw.map((n) => n._id);
+    const readGlobalRecords = await NotificationRead.find({
+      userId,
+      notificationId: { $in: globalNotificationIds },
+    }).lean();
+    const readGlobalMap = new Map(
+      readGlobalRecords.map((r) => [r.notificationId.toString(), r.readAt])
+    );
+
+    const globalNotifications = globalNotificationsRaw.map((notification) => ({
+      ...notification,
+      isGlobal: true,
+      userId: null, // Global notifications don't have a userId
+      readAt: readGlobalMap.get(notification._id.toString()) || null,
+    }));
+
+    // Count total notifications for pagination
+    const totalUserNotifications = await Notification.countDocuments(userQuery);
+    const totalGlobalNotifications = await Notification.countDocuments(globalQuery);
+    const totalNotifications = totalUserNotifications + totalGlobalNotifications;
+
+    // Combine and sort all notifications
+    const allNotifications = [...userNotifications, ...globalNotifications]
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, parseInt(limit));
+
+    // Calculate unread count
+    const userUnreadCount = await Notification.countDocuments({
+      userId,
       readAt: { $exists: false },
     });
+
+    // Count unread global notifications
+    const globalAudienceConditionsForCount = [{ targetAudience: 'all' }];
+    if (isVerified) {
+      globalAudienceConditionsForCount.push({ targetAudience: 'verified' });
+    } else {
+      globalAudienceConditionsForCount.push({ targetAudience: 'unverified' });
+    }
+
+    const unreadGlobalQuery = {
+      isGlobal: true,
+      sentAt: { $exists: true },
+      $or: globalAudienceConditionsForCount,
+    };
+    if (readIds.length > 0) {
+      unreadGlobalQuery._id = { $nin: readIds };
+    }
+    const globalUnreadCount = await Notification.countDocuments(unreadGlobalQuery);
+
+    const totalUnreadCount = userUnreadCount + globalUnreadCount;
 
     res.json({
       success: true,
       data: {
-        notifications,
-        unreadCount,
-        total: notifications.length,
+        notifications: allNotifications,
+        unreadCount: totalUnreadCount,
+        total: totalNotifications,
       },
     });
   } catch (error) {
@@ -41,18 +130,49 @@ const getNotifications = async (req, res) => {
 };
 
 /**
- * Get count of unread notifications
+ * Get count of unread notifications (includes global notifications)
  */
 const getUnreadCount = async (req, res) => {
   try {
-    const unreadCount = await Notification.countDocuments({
-      userId: req.user.id,
+    const userId = req.user.id;
+    
+    // Get user to check verification status
+    const user = await User.findById(userId).select('isVerified emailVerifiedAt').lean();
+    const isVerified = user?.isVerified || !!user?.emailVerifiedAt;
+
+    // Count user-specific unread notifications
+    const userUnreadCount = await Notification.countDocuments({
+      userId,
       readAt: { $exists: false },
     });
 
+    // Get IDs of global notifications this user has read
+    const readGlobalNotificationIds = await NotificationRead.find({ userId }).select('notificationId').lean();
+    const readIds = readGlobalNotificationIds.map((r) => r.notificationId.toString());
+
+    // Count unread global notifications
+    const globalAudienceConditionsForCount = [{ targetAudience: 'all' }];
+    if (isVerified) {
+      globalAudienceConditionsForCount.push({ targetAudience: 'verified' });
+    } else {
+      globalAudienceConditionsForCount.push({ targetAudience: 'unverified' });
+    }
+
+    const globalUnreadQuery = {
+      isGlobal: true,
+      sentAt: { $exists: true },
+      $or: globalAudienceConditionsForCount,
+    };
+    if (readIds.length > 0) {
+      globalUnreadQuery._id = { $nin: readIds };
+    }
+    const globalUnreadCount = await Notification.countDocuments(globalUnreadQuery);
+
+    const totalUnreadCount = userUnreadCount + globalUnreadCount;
+
     res.json({
       success: true,
-      data: { unreadCount },
+      data: { unreadCount: totalUnreadCount },
     });
   } catch (error) {
     console.error('Error fetching unread count:', error);
@@ -116,29 +236,75 @@ const createNotification = async (req, res) => {
 
 /**
  * Mark a notification as read
+ * Handles both user-specific and global notifications
  */
 const markAsRead = async (req, res) => {
   try {
-    const notification = await Notification.findOne({
-      _id: req.params.id,
-      userId: req.user.id,
+    const userId = req.user.id;
+    const notificationId = req.params.id;
+
+    // Check if it's a user-specific notification
+    const userNotification = await Notification.findOne({
+      _id: notificationId,
+      userId,
+      isGlobal: { $ne: true },
     });
 
-    if (!notification) {
-      return res.status(404).json({
-        success: false,
-        message: 'Notification not found',
+    if (userNotification) {
+      // User-specific notification - mark as read directly
+      if (!userNotification.readAt) {
+        userNotification.readAt = new Date();
+        await userNotification.save();
+      }
+
+      return res.json({
+        success: true,
+        data: { notification: userNotification },
       });
     }
 
-    if (!notification.readAt) {
-      notification.readAt = new Date();
-      await notification.save();
+    // Check if it's a global notification
+    const globalNotification = await Notification.findOne({
+      _id: notificationId,
+      isGlobal: true,
+    });
+
+    if (globalNotification) {
+      // Global notification - create a read record
+      const readRecord = await NotificationRead.findOneAndUpdate(
+        {
+          userId,
+          notificationId,
+        },
+        {
+          userId,
+          notificationId,
+          readAt: new Date(),
+        },
+        {
+          upsert: true,
+          new: true,
+        }
+      );
+
+      // Return notification with readAt included
+      const notificationWithRead = {
+        ...globalNotification.toObject(),
+        isGlobal: true,
+        userId: null,
+        readAt: readRecord.readAt,
+      };
+
+      return res.json({
+        success: true,
+        data: { notification: notificationWithRead },
+      });
     }
 
-    res.json({
-      success: true,
-      data: { notification },
+    // Notification not found
+    return res.status(404).json({
+      success: false,
+      message: 'Notification not found',
     });
   } catch (error) {
     console.error('Error marking notification as read:', error);
@@ -150,13 +316,16 @@ const markAsRead = async (req, res) => {
 };
 
 /**
- * Mark all notifications as read
+ * Mark all notifications as read (includes global notifications)
  */
 const markAllAsRead = async (req, res) => {
   try {
-    const result = await Notification.updateMany(
+    const userId = req.user.id;
+
+    // Mark all user-specific notifications as read
+    const userResult = await Notification.updateMany(
       {
-        userId: req.user.id,
+        userId,
         readAt: { $exists: false },
       },
       {
@@ -164,9 +333,62 @@ const markAllAsRead = async (req, res) => {
       }
     );
 
+    // Get user to check verification status for global notifications
+    const user = await User.findById(userId).select('isVerified emailVerifiedAt').lean();
+    const isVerified = user?.isVerified || !!user?.emailVerifiedAt;
+
+    // Get all unread global notifications that match user's audience
+    const globalAudienceConditionsForMarkAll = [{ targetAudience: 'all' }];
+    if (isVerified) {
+      globalAudienceConditionsForMarkAll.push({ targetAudience: 'verified' });
+    } else {
+      globalAudienceConditionsForMarkAll.push({ targetAudience: 'unverified' });
+    }
+
+    const globalQuery = {
+      isGlobal: true,
+      sentAt: { $exists: true },
+      $or: globalAudienceConditionsForMarkAll,
+    };
+
+    // Get IDs of global notifications this user has already read
+    const readGlobalNotificationIds = await NotificationRead.find({ userId }).select('notificationId').lean();
+    const readIds = readGlobalNotificationIds.map((r) => r.notificationId.toString());
+
+    // Exclude already read global notifications
+    if (readIds.length > 0) {
+      globalQuery._id = { $nin: readIds };
+    }
+
+    const unreadGlobalNotifications = await Notification.find(globalQuery).select('_id').lean();
+    const globalNotificationIds = unreadGlobalNotifications.map((n) => n._id);
+
+    // Create read records for all unread global notifications
+    let globalReadCount = 0;
+    if (globalNotificationIds.length > 0) {
+      const readRecords = globalNotificationIds.map((notificationId) => ({
+        userId,
+        notificationId,
+        readAt: new Date(),
+      }));
+
+      // Use insertMany with ordered: false to handle potential duplicates gracefully
+      try {
+        await NotificationRead.insertMany(readRecords, { ordered: false });
+        globalReadCount = readRecords.length;
+      } catch (error) {
+        // Some records might already exist, count successful inserts
+        if (error.writeErrors) {
+          globalReadCount = readRecords.length - error.writeErrors.length;
+        }
+      }
+    }
+
+    const totalUpdatedCount = userResult.modifiedCount + globalReadCount;
+
     res.json({
       success: true,
-      data: { updatedCount: result.modifiedCount },
+      data: { updatedCount: totalUpdatedCount },
     });
   } catch (error) {
     console.error('Error marking all notifications as read:', error);
@@ -179,20 +401,24 @@ const markAllAsRead = async (req, res) => {
 
 /**
  * Delete a notification
+ * Only user-specific notifications can be deleted, not global ones
  */
 const deleteNotification = async (req, res) => {
   try {
-    const notification = await Notification.findOneAndDelete({
+    const notification = await Notification.findOne({
       _id: req.params.id,
       userId: req.user.id,
+      isGlobal: { $ne: true }, // Cannot delete global notifications
     });
 
     if (!notification) {
       return res.status(404).json({
         success: false,
-        message: 'Notification not found',
+        message: 'Notification not found or cannot be deleted',
       });
     }
+
+    await Notification.findByIdAndDelete(req.params.id);
 
     res.json({
       success: true,

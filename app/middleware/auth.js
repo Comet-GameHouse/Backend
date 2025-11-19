@@ -37,6 +37,19 @@ const authenticate = async (req, res, next) => {
         });
       }
 
+      // Check email verification for email/password users
+      // OAuth users (googleId or discordId) are considered verified
+      const isOAuthUser = user.googleId || user.discordId;
+      const isEmailVerified = user.emailVerifiedAt !== null && user.emailVerifiedAt !== undefined;
+      
+      if (!isOAuthUser && !isEmailVerified) {
+        return res.status(403).json({ 
+          success: false,
+          message: 'Email verification required. Please verify your email address to access this resource.',
+          code: 'EMAIL_NOT_VERIFIED'
+        });
+      }
+
       req.user = user;
       next();
     } catch (tokenError) {

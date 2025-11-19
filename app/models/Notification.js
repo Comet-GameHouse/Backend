@@ -4,8 +4,27 @@ const notificationSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
+    required: function() {
+      return !this.isGlobal;
+    },
     index: true,
+  },
+  isGlobal: {
+    type: Boolean,
+    default: false,
+    index: true,
+  },
+  targetAudience: {
+    type: String,
+    enum: ['all', 'verified', 'unverified'],
+    default: 'all',
+  },
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
+  sentAt: {
+    type: Date,
   },
   type: {
     type: String,

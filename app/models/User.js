@@ -33,6 +33,38 @@ const userSchema = new mongoose.Schema({
   avatarUrl: {
     type: String,
   },
+  bio: {
+    type: String,
+    trim: true,
+    maxlength: 500,
+  },
+  pronouns: {
+    type: String,
+    trim: true,
+    maxlength: 50,
+  },
+  timezone: {
+    type: String,
+    trim: true,
+    maxlength: 50,
+  },
+  socials: {
+    discord: {
+      type: String,
+      trim: true,
+      maxlength: 100,
+    },
+    twitch: {
+      type: String,
+      trim: true,
+      maxlength: 100,
+    },
+    twitter: {
+      type: String,
+      trim: true,
+      maxlength: 100,
+    },
+  },
   role: {
     type: String,
     enum: ['player', 'moderator', 'admin'],

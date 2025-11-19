@@ -9,10 +9,11 @@ const createSocketService = require('./app/services/socketService');
 // Initialize services
 const app = createAPIService();
 const server = http.createServer(app);
-const { wss, sendNotificationToUser } = createSocketService(server);
+const { wss, sendNotificationToUser, broadcastToAll } = createSocketService(server);
 
-// Make sendNotificationToUser available globally for routes
+// Make sendNotificationToUser and broadcastToAll available globally for routes
 global.sendNotificationToUser = sendNotificationToUser;
+global.broadcastToAll = broadcastToAll;
 
 // Connect to MongoDB
 connectDB();
